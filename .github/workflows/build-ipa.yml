@@ -1,0 +1,76 @@
+name: Build unsigned IPA
+
+# IMPORTANT: this file must live at the TRUE ROOT of your repository, i.e.
+#   <repo root>/.github/workflows/build-ipa.yml
+# GitHub Actions only ever scans .github/workflows at the repo root — it will
+# NOT find this file if it's nested inside a project subfolder (e.g. under
+# "RobotArmCarController_iOS_Project (1)/ios_project/.github/..."). If your
+# repo currently has the project nested under extra folders, that's fine and
+# does not need to change — only this workflow file itself needs to be at the
+# repo root. See step 3 below: it finds your .xcodeproj automatically no
+# matter how deeply it's nested.
+
+on:
+  workflow_dispatch:      # lets you click "Run workflow" manually on GitHub
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -p
+          xcodebuild -version
+
+      - name: Locate the .xcodeproj (handles any nesting depth)
+        id: locate
+        run: |
+          PROJECT_PATH=$(find "$GITHUB_WORKSPACE" -type d -name "RobotArmCarController.xcodeproj" -not -path "*/.git/*" | head -n 1)
+          if [ -z "$PROJECT_PATH" ]; then
+            echo "::error::RobotArmCarController.xcodeproj not found anywhere in the repo checkout."
+            exit 1
+          fi
+          PROJECT_DIR=$(dirname "$PROJECT_PATH")
+          echo "Found project at: $PROJECT_PATH"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Show available schemes (diagnostic)
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        run: xcodebuild -project RobotArmCarController.xcodeproj -list
+
+      - name: Build unsigned .app archive for iOS devices
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        run: |
+          xcodebuild archive \
+            -project RobotArmCarController.xcodeproj \
+            -scheme RobotArmCarController \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/build/RobotArmCarController.xcarchive" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      - name: Package Payload/*.app into an unsigned .ipa
+        run: |
+          cd "$RUNNER_TEMP/build"
+          mkdir -p Payload
+          cp -r RobotArmCarController.xcarchive/Products/Applications/RobotArmCarController.app Payload/
+          ditto -c -k --sequesterRsrc --keepParent Payload RobotArmCarController-unsigned.ipa
+          ls -la
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RobotArmCarController-unsigned-ipa
+          path: ${{ runner.temp }}/build/RobotArmCarController-unsigned.ipa
+          if-no-files-found: error
